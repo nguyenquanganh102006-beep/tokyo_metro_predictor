@@ -27,6 +27,22 @@ def unban_station(req: BanStationRequest, db: Session = Depends(get_db), admin: 
         raise HTTPException(status_code=404, detail="Station không tồn tại")
     station.is_active = True
     db.commit()
+    
+    # Kiểm tra xem tất cả ga trong tuyến có hoạt động không
+    # Nếu có, tuyến cũng tự động được mở
+    if station.line_id:
+        line = db.query(Line).filter(Line.line_id == station.line_id).first()
+        if line and not line.is_active:
+            # Kiểm tra xem tất cả ga trong tuyến có hoạt động không
+            inactive_stations = db.query(Station).filter(
+                Station.line_id == station.line_id,
+                Station.is_active == False
+            ).count()
+            if inactive_stations == 0:
+                # Tất cả ga đều hoạt động -> mở tuyến
+                line.is_active = True
+                db.commit()
+    
     return StatusResponse(success=True, message=f"Đã mở lại ga {station.station_name}")
 
 # --- Quản lý Line ---

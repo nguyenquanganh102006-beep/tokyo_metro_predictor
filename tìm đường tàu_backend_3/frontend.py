@@ -77,6 +77,28 @@ def create_map(lang):
         m = folium.Map(location=[35.6895, 139.6917], zoom_start=12)  # OpenStreetMap - Tiếng Nhật
     return draw_routes(m, lang)
 
+def group_steps_by_line(steps):
+    """Nhóm các step theo line_name liên tiếp"""
+    if not steps:
+        return []
+    
+    groups = []
+    current_group = [steps[0]]
+    current_line = steps[0].get('line_name')
+    
+    for step in steps[1:]:
+        if step.get('line_name') == current_line:
+            # Cùng tuyến
+            current_group.append(step)
+        else:
+            # Khác tuyến - bắt đầu nhóm mới
+            groups.append(current_group)
+            current_group = [step]
+            current_line = step.get('line_name')
+    
+    groups.append(current_group)
+    return groups
+
 # --- LAYOUT CHÍNH: PANEL TRÁI (FORM) + PANEL PHẢI (MAP LỚN) ---
 left_col, right_col = st.columns([1.0, 2.7], gap="large")
 
@@ -209,13 +231,25 @@ with left_col:
             st.success(f"📍 {res['total_distance_km']} km | 💰 {res['total_cost_yen']} ¥ | 🔄 {res['total_transfers']} đổi tàu")
             st.info(f"Ga gần điểm đi: {res['origin_station']} | Ga gần điểm đến: {res['dest_station']}")
             with st.expander("📄 Chi tiết các chặng"):
-                for i, s in enumerate(res['steps'], 1):
-                    st.markdown(f"**{i}.** {s['from_station']} → {s['to_station']}")
-                    transfer_tag = " | 🔀 Đổi tàu" if s.get('is_transfer') else ""
-                    st.caption(f"🚇 {s.get('line_name')} | 📏 {s.get('distance_km')} km | 💵 {s.get('fare_yen')} ¥{transfer_tag}")
+                line_groups = group_steps_by_line(res['steps'])
+                for i, group in enumerate(line_groups, 1):
+                    first_step = group[0]
+                    last_step = group[-1]
+                    
+                    total_distance = sum(s.get('distance_km', 0) for s in group)
+                    total_fare = sum(s.get('fare_yen', 0) for s in group)
+                    line_color = first_step.get('line_color', '#2E86C1')
+                    
+                    with st.expander(f"🚇 **{first_step.get('line_name')}**: {first_step['from_station']} → {last_step['to_station']} | 📏 {total_distance:.1f} km"):
+                        for j, step in enumerate(group, 1):
+                            transfer_tag = " 🔀" if step.get('is_transfer') else ""
+                            st.caption(f"  {j}. {step['from_station']} → {step['to_station']} | {step.get('distance_km')} km | {step.get('fare_yen')} ¥{transfer_tag}")
+
 
         if st.session_state.role == "admin":
             with st.expander("🛠️ Quản trị (Admin)"):
+                # --- Phần 1: Chọn ga để cấm/mở ---
+                st.subheader("📍 Quản lý Ga")
                 try:
                     stations_res = requests.get(f"{API_BASE}/stations/", headers=get_headers())
                     stations_list = stations_res.json() if stations_res.status_code == 200 else []
@@ -229,16 +263,140 @@ with left_col:
                     if col_btn1.button("🚫 Chặn ga này", use_container_width=True):
                         requests.post(f"{API_BASE}/admin/station/ban", json={"station_id": s_map[sel_s]}, headers=get_headers())
                         st.toast(f"Đã chặn ga {sel_s}")
+                        st.rerun()
                     if col_btn2.button("✅ Mở ga này", use_container_width=True):
                         requests.post(f"{API_BASE}/admin/station/unban", json={"station_id": s_map[sel_s]}, headers=get_headers())
                         st.toast(f"Đã mở ga {sel_s}")
+                        st.rerun()
                 else:
                     st.error("Không thể tải danh sách ga từ Database.")
 
-                line_id_input = st.text_input("Nhập mã Tuyến (ví dụ: Ginza, Marunouchi)")
-                if st.button("Xác nhận thay đổi Tuyến", use_container_width=True):
-                    requests.post(f"{API_BASE}/admin/line/ban", json={"line_id": line_id_input}, headers=get_headers())
-                    st.success(f"Đã cập nhật trạng thái cho tuyến {line_id_input}")
+                # --- Phần 2: Danh sách các ga bị cấm ---
+                st.write("#### 🔴 Danh sách các ga bị cấm")
+                try:
+                    banned_stations_res = requests.get(f"{API_BASE}/admin/banned/stations", headers=get_headers())
+                    banned_stations = banned_stations_res.json() if banned_stations_res.status_code == 200 else []
+                except:
+                    banned_stations = []
+
+                if banned_stations:
+                    st.write(f"**Tổng cộng: {len(banned_stations)} ga bị cấm**")
+                    select_all_stations = st.checkbox("☑️ Chọn tất cả các ga", key="select_all_banned_stations")
+                    
+                    selected_to_unban_stations = []
+                    
+                    if select_all_stations:
+                        selected_to_unban_stations = [
+                            {
+                                'station_id': station.get('station_id'),
+                                'station_name': station.get('station_name')
+                            }
+                            for station in banned_stations
+                        ]
+                        for station in banned_stations:
+                            st.caption(f"✅ 🚇 {station.get('station_name')} (ID: {station.get('station_id')})")
+                    else:
+                        for station in banned_stations:
+                            col_checkbox, col_name = st.columns([0.5, 3])
+                            with col_checkbox:
+                                is_checked = st.checkbox(
+                                    label="",
+                                    key=f"station_ban_{station.get('station_id')}",
+                                    label_visibility="collapsed"
+                                )
+                                if is_checked:
+                                    selected_to_unban_stations.append({
+                                        'station_id': station.get('station_id'),
+                                        'station_name': station.get('station_name')
+                                    })
+                            with col_name:
+                                st.caption(f"🚇 {station.get('station_name')} (ID: {station.get('station_id')})")
+                    
+                    if selected_to_unban_stations:
+                        if st.button("✅ Mở các ga được chọn", use_container_width=True, key="unban_selected_stations"):
+                            for station in selected_to_unban_stations:
+                                requests.post(f"{API_BASE}/admin/station/unban", 
+                                            json={"station_id": station['station_id']}, 
+                                            headers=get_headers())
+                            st.success(f"✅ Đã mở {len(selected_to_unban_stations)} ga!")
+                            st.rerun()
+                else:
+                    st.info("✅ Không có ga nào bị cấm")
+
+                st.divider()
+
+                # --- Phần 3: Chọn tuyến để cấm/mở ---
+                st.subheader("🚆 Quản lý Tuyến")
+                try:
+                    lines_res = requests.get(f"{API_BASE}/stations/lines", headers=get_headers())
+                    lines_list = lines_res.json() if lines_res.status_code == 200 else []
+                except:
+                    lines_list = []
+
+                if lines_list:
+                    l_map = {f"{l.get('line_name')} (ID: {l.get('line_id')})": l.get('line_id') for l in lines_list}
+                    sel_l = st.selectbox("Chọn tuyến cần thao tác", options=list(l_map.keys()), key="line_select")
+                    col_btn3, col_btn4 = st.columns(2)
+                    if col_btn3.button("🚫 Chặn tuyến này", use_container_width=True):
+                        requests.post(f"{API_BASE}/admin/line/ban", json={"line_id": l_map[sel_l]}, headers=get_headers())
+                        st.toast(f"Đã chặn tuyến {sel_l}")
+                        st.rerun()
+                    if col_btn4.button("✅ Mở tuyến này", use_container_width=True):
+                        requests.post(f"{API_BASE}/admin/line/unban", json={"line_id": l_map[sel_l]}, headers=get_headers())
+                        st.toast(f"Đã mở tuyến {sel_l}")
+                        st.rerun()
+
+                # --- Phần 4: Danh sách tuyến đã đóng ---
+                st.write("#### 🔴 Danh sách tuyến đã đóng")
+                try:
+                    banned_lines_res = requests.get(f"{API_BASE}/admin/banned/lines", headers=get_headers())
+                    banned_lines = banned_lines_res.json() if banned_lines_res.status_code == 200 else []
+                except:
+                    banned_lines = []
+
+                if banned_lines:
+                    st.write(f"**Tổng cộng: {len(banned_lines)} tuyến đã đóng**")
+                    select_all_lines = st.checkbox("☑️ Chọn tất cả các tuyến", key="select_all_banned_lines")
+                    
+                    selected_to_unban_lines = []
+                    
+                    if select_all_lines:
+                        selected_to_unban_lines = [
+                            {
+                                'line_id': line.get('line_id'),
+                                'line_name': line.get('line_name')
+                            }
+                            for line in banned_lines
+                        ]
+                        for line in banned_lines:
+                            st.caption(f"✅ 🚇 {line.get('line_name')} (ID: {line.get('line_id')})")
+                    else:
+                        for line in banned_lines:
+                            col_checkbox, col_name = st.columns([0.5, 3])
+                            with col_checkbox:
+                                is_checked = st.checkbox(
+                                    label="",
+                                    key=f"line_ban_{line.get('line_id')}",
+                                    label_visibility="collapsed"
+                                )
+                                if is_checked:
+                                    selected_to_unban_lines.append({
+                                        'line_id': line.get('line_id'),
+                                        'line_name': line.get('line_name')
+                                    })
+                            with col_name:
+                                st.caption(f"🚇 {line.get('line_name')} (ID: {line.get('line_id')})")
+                    
+                    if selected_to_unban_lines:
+                        if st.button("✅ Mở các tuyến được chọn", use_container_width=True, key="unban_selected_lines"):
+                            for line in selected_to_unban_lines:
+                                requests.post(f"{API_BASE}/admin/line/unban", 
+                                            json={"line_id": line['line_id']}, 
+                                            headers=get_headers())
+                            st.success(f"✅ Đã mở {len(selected_to_unban_lines)} tuyến!")
+                            st.rerun()
+                else:
+                    st.info("✅ Không có tuyến nào bị đóng")
 
 with right_col:
     st.write("### 🗺️ Bản đồ")
