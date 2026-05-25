@@ -191,6 +191,13 @@ def find_path(
 
     path_edges = _reconstruct_path(prev_edge, dest_station.station_id)
 
+    for i, (_, tgt_id, _) in enumerate(path_edges):
+        reached_station = station_map.get(tgt_id)
+        if reached_station and reached_station.station_name == dest_station.station_name:
+            path_edges = path_edges[:i + 1]
+            dest_station = reached_station
+            break
+
     # Lấy map line_id -> Line để lấy tên tuyến
     line_map = {l.line_id: l for l in db.query(Line).all()}
 
