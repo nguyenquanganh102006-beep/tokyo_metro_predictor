@@ -14,6 +14,7 @@ if "origin" not in st.session_state: st.session_state.origin = [35.6812, 139.767
 if "dest" not in st.session_state: st.session_state.dest = [35.6586, 139.7454]
 if "path_data" not in st.session_state: st.session_state.path_data = None
 if "map_lang" not in st.session_state: st.session_state.map_lang = "en"
+if "banned_station_visible_count" not in st.session_state: st.session_state.banned_station_visible_count = 5
 
 def get_headers():
     return {"Authorization": f"Bearer {st.session_state.token}"} if st.session_state.token else {}
@@ -81,11 +82,11 @@ def group_steps_by_line(steps):
     """Nhóm các step theo line_name liên tiếp"""
     if not steps:
         return []
-    
+
     groups = []
     current_group = [steps[0]]
     current_line = steps[0].get('line_name')
-    
+
     for step in steps[1:]:
         if step.get('line_name') == current_line:
             # Cùng tuyến
@@ -95,9 +96,47 @@ def group_steps_by_line(steps):
             groups.append(current_group)
             current_group = [step]
             current_line = step.get('line_name')
-    
+
     groups.append(current_group)
     return groups
+
+def calculate_route_fare(distance_km, user_type):
+    """Tinh tien ve cho mot tuyen gom nhieu edge, giong logic backend."""
+    if distance_km <= 6:
+        adult_fare = 180
+    elif distance_km <= 11:
+        adult_fare = 210
+    elif distance_km <= 19:
+        adult_fare = 260
+    elif distance_km <= 27:
+        adult_fare = 300
+    else:
+        adult_fare = 330
+
+    if user_type == "child":
+        return adult_fare // 2
+    return adult_fare
+
+def step_distance(step):
+    try:
+        return float(step.get('distance_km') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+def station_label(station):
+    return f"{station.get('station_name')} (ID: {station.get('station_id')})"
+
+def nearest_station_index(stations, point):
+    if not stations:
+        return 0
+
+    def score(station):
+        try:
+            return (float(station.get('lat')) - point[0]) ** 2 + (float(station.get('lon')) - point[1]) ** 2
+        except (TypeError, ValueError):
+            return float("inf")
+
+    return min(range(len(stations)), key=lambda idx: score(stations[idx]))
 
 # --- LAYOUT CHÍNH: PANEL TRÁI (FORM) + PANEL PHẢI (MAP LỚN) ---
 left_col, right_col = st.columns([1.0, 2.7], gap="large")
@@ -172,30 +211,42 @@ with left_col:
             lang_display = "🇬🇧 Tiếng Anh" if st.session_state.map_lang == "en" else "🇯🇵 Tiếng Nhật"
             st.write(f"#### ⚙️ Thông số lộ trình ({lang_display})")
 
-        st.write("#### ✍️ Nhập điểm đi / điểm đến")
+        try:
+            stations_res = requests.get(f"{API_BASE}/stations/", headers=get_headers())
+            stations_list = stations_res.json() if stations_res.status_code == 200 else []
+        except:
+            stations_list = []
+
+        st.write("#### ✍️ Chọn ga đi / ga đến")
         in_col1, in_col2 = st.columns(2)
-        with in_col1:
-            origin_place_input = st.text_input(
-                "Điểm đi",
-                placeholder="Ví dụ: Tokyo Station",
-                key="origin_place_input",
-            )
-        with in_col2:
-            dest_place_input = st.text_input(
-                "Điểm đến",
-                placeholder="Ví dụ: Shibuya Crossing",
-                key="dest_place_input",
-            )
-        if st.button("📌 Áp dụng địa điểm", use_container_width=True):
-            origin_geo = geocode_place(origin_place_input)
-            dest_geo = geocode_place(dest_place_input)
-            if not origin_geo or not dest_geo:
-                st.error("❌ Không tìm thấy một trong hai địa điểm. Hãy nhập rõ hơn hoặc chọn trên bản đồ.")
-            else:
-                st.session_state.origin = [origin_geo["lat"], origin_geo["lon"]]
-                st.session_state.dest = [dest_geo["lat"], dest_geo["lon"]]
+        if stations_list:
+            station_options = [station_label(station) for station in stations_list]
+            station_by_label = dict(zip(station_options, stations_list))
+
+            with in_col1:
+                origin_station_label = st.selectbox(
+                    "Ga đi",
+                    options=station_options,
+                    index=nearest_station_index(stations_list, st.session_state.origin),
+                    key="origin_station_select",
+                )
+            with in_col2:
+                dest_station_label = st.selectbox(
+                    "Ga đến",
+                    options=station_options,
+                    index=nearest_station_index(stations_list, st.session_state.dest),
+                    key="dest_station_select",
+                )
+
+            if st.button("📌 Áp dụng ga đã chọn", use_container_width=True):
+                origin_station = station_by_label[origin_station_label]
+                dest_station = station_by_label[dest_station_label]
+                st.session_state.origin = [float(origin_station["lat"]), float(origin_station["lon"])]
+                st.session_state.dest = [float(dest_station["lat"]), float(dest_station["lon"])]
                 st.session_state.path_data = None
                 st.rerun()
+        else:
+            st.error("Không thể tải danh sách ga từ Database.")
 
         col_info1, col_info2 = st.columns(2)
         with col_info1:
@@ -232,29 +283,26 @@ with left_col:
             st.info(f"Ga gần điểm đi: {res['origin_station']} | Ga gần điểm đến: {res['dest_station']}")
             with st.expander("📄 Chi tiết các chặng"):
                 line_groups = group_steps_by_line(res['steps'])
+                fare_user_type = res.get('user_type', user)
                 for i, group in enumerate(line_groups, 1):
                     first_step = group[0]
                     last_step = group[-1]
-                    
-                    total_distance = sum(s.get('distance_km', 0) for s in group)
-                    total_fare = sum(s.get('fare_yen', 0) for s in group)
+
+                    total_distance = sum(step_distance(s) for s in group)
+                    total_fare = calculate_route_fare(total_distance, fare_user_type)
                     line_color = first_step.get('line_color', '#2E86C1')
-                    
-                    with st.expander(f"🚇 **{first_step.get('line_name')}**: {first_step['from_station']} → {last_step['to_station']} | 📏 {total_distance:.1f} km"):
+
+                    with st.expander(f"🚇 **{first_step.get('line_name')}**: {first_step['from_station']} → {last_step['to_station']} | 📏 {total_distance:.1f} km | 💰 {total_fare} ¥"):
+                        st.caption(f"Tuyến này gồm {len(group)} edge | Tổng tiền tuyến: {total_fare} ¥")
                         for j, step in enumerate(group, 1):
                             transfer_tag = " 🔀" if step.get('is_transfer') else ""
-                            st.caption(f"  {j}. {step['from_station']} → {step['to_station']} | {step.get('distance_km')} km | {step.get('fare_yen')} ¥{transfer_tag}")
+                            st.caption(f"  {j}. {step['from_station']} → {step['to_station']} | {step_distance(step):.3f} km{transfer_tag}")
 
 
         if st.session_state.role == "admin":
             with st.expander("🛠️ Quản trị (Admin)"):
                 # --- Phần 1: Chọn ga để cấm/mở ---
                 st.subheader("📍 Quản lý Ga")
-                try:
-                    stations_res = requests.get(f"{API_BASE}/stations/", headers=get_headers())
-                    stations_list = stations_res.json() if stations_res.status_code == 200 else []
-                except:
-                    stations_list = []
 
                 if stations_list:
                     s_map = {f"{s.get('station_name')} (ID: {s.get('station_id')})": s.get('station_id') for s in stations_list}
@@ -281,6 +329,8 @@ with left_col:
 
                 if banned_stations:
                     st.write(f"**Tổng cộng: {len(banned_stations)} ga bị cấm**")
+                    visible_count = min(st.session_state.banned_station_visible_count, len(banned_stations))
+                    visible_banned_stations = banned_stations[:visible_count]
                     select_all_stations = st.checkbox("☑️ Chọn tất cả các ga", key="select_all_banned_stations")
                     
                     selected_to_unban_stations = []
@@ -293,10 +343,10 @@ with left_col:
                             }
                             for station in banned_stations
                         ]
-                        for station in banned_stations:
+                        for station in visible_banned_stations:
                             st.caption(f"✅ 🚇 {station.get('station_name')} (ID: {station.get('station_id')})")
                     else:
-                        for station in banned_stations:
+                        for station in visible_banned_stations:
                             col_checkbox, col_name = st.columns([0.5, 3])
                             with col_checkbox:
                                 is_checked = st.checkbox(
@@ -311,7 +361,21 @@ with left_col:
                                     })
                             with col_name:
                                 st.caption(f"🚇 {station.get('station_name')} (ID: {station.get('station_id')})")
-                    
+
+                    more_col, collapse_col = st.columns(2)
+                    if visible_count < len(banned_stations):
+                        if more_col.button(
+                            f"Xem thêm ({len(banned_stations) - visible_count} ga)",
+                            use_container_width=True,
+                            key="show_more_banned_stations",
+                        ):
+                            st.session_state.banned_station_visible_count = min(visible_count + 5, len(banned_stations))
+                            st.rerun()
+                    if visible_count > 5:
+                        if collapse_col.button("Thu gọn", use_container_width=True, key="collapse_banned_stations"):
+                            st.session_state.banned_station_visible_count = 5
+                            st.rerun()
+                     
                     if selected_to_unban_stations:
                         if st.button("✅ Mở các ga được chọn", use_container_width=True, key="unban_selected_stations"):
                             for station in selected_to_unban_stations:
@@ -319,8 +383,10 @@ with left_col:
                                             json={"station_id": station['station_id']}, 
                                             headers=get_headers())
                             st.success(f"✅ Đã mở {len(selected_to_unban_stations)} ga!")
+                            st.session_state.banned_station_visible_count = 5
                             st.rerun()
                 else:
+                    st.session_state.banned_station_visible_count = 5
                     st.info("✅ Không có ga nào bị cấm")
 
                 st.divider()
