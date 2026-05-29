@@ -7,6 +7,13 @@ from streamlit_folium import st_folium
 API_BASE = "http://127.0.0.1:8000/api"
 st.set_page_config(page_title="Tokyo Subway Pathfinder", layout="wide", page_icon="🚇")
 
+JAPAN_BOUNDS = {
+    "min_lat": 20.0,
+    "max_lat": 46.5,
+    "min_lon": 122.0,
+    "max_lon": 154.0,
+}
+
 # Khởi tạo Session State để lưu dữ liệu khi reload trang
 if "token" not in st.session_state: st.session_state.token = None
 if "role" not in st.session_state: st.session_state.role = "user"
@@ -72,10 +79,18 @@ def draw_routes(m, lang):
 
 def create_map(lang):
     """Tạo bản đồ (lang: 'ja' hoặc 'en')"""
+    map_options = {
+        "location": [35.6895, 139.6917],
+        "zoom_start": 12,
+        "min_zoom": 5,
+        "max_bounds": True,
+        **JAPAN_BOUNDS,
+    }
+
     if lang == "en":
-        m = folium.Map(location=[35.6895, 139.6917], zoom_start=12, tiles='CartoDB positron')
+        m = folium.Map(**map_options, tiles='CartoDB positron')
     else:
-        m = folium.Map(location=[35.6895, 139.6917], zoom_start=12)  # OpenStreetMap - Tiếng Nhật
+        m = folium.Map(**map_options)  # OpenStreetMap - Tiếng Nhật
     return draw_routes(m, lang)
 
 def group_steps_by_line(steps):
