@@ -8,7 +8,7 @@ Repo GitHub: https://github.com/nguyenquanganh102006-beep/tokyo_metro_predictor
 
 Bạn cần cài 3 thứ:
 
-1. Python 3.11 trở lên
+1. Python 3.11
    Tải tại https://www.python.org/downloads/
 
 2. PostgreSQL
