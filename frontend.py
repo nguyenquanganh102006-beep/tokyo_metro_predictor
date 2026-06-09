@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import requests
 import folium
 import math
@@ -288,6 +288,7 @@ def draw_routes(m, lang):
                 folium.PolyLine(
                     locations=[p1, p2],
                     color=line_color, weight=6, opacity=0.8,
+                    dash_array="8, 8" if stp.get('is_transfer') else None,
                     tooltip=f"{stp.get('line_name', 'Tàu điện')} ({stp.get('distance_km')} km)"
                 ).add_to(m)
                 
